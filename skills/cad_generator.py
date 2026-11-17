@@ -8,7 +8,7 @@ import matplotlib.patches as patches
 
 
 def _get_opening_geometry(space: Dict[str, Any], opening: Dict[str, Any]) -> Dict[str, Any]:
-    """يحسب الإحداثيات الهندسية للباب أو النافذة على الجدار المحدد."""
+    """يحسب الإحداثيات الهندسية للباب أو النافذة بحيث يفتح الباب دائماً نحو داخل الفضاء."""
     x = float(space["x"])
     y = float(space["y"])
     w = float(space["width"])
@@ -21,22 +21,22 @@ def _get_opening_geometry(space: Dict[str, Any], opening: Dict[str, Any]) -> Dic
         x1, y1 = x + offset, y
         x2, y2 = x1 + op_w, y
         hinge = (x1, y1)
-        start_angle, end_angle = 0, 90
+        start_angle, end_angle = 0, 90  # يفتح للأعلى (نحو داخل الغرفة)
     elif wall == "north":
         x1, y1 = x + offset, y + d
         x2, y2 = x1 + op_w, y + d
         hinge = (x1, y1)
-        start_angle, end_angle = 270, 360
+        start_angle, end_angle = 270, 360  # يفتح للأسفل (نحو داخل الغرفة)
     elif wall == "west":
         x1, y1 = x, y + offset
         x2, y2 = x, y1 + op_w
         hinge = (x1, y1)
-        start_angle, end_angle = 0, 90
+        start_angle, end_angle = 0, 90  # يفتح لليمين (نحو داخل الغرفة)
     else:  # east
         x1, y1 = x + w, y + offset
         x2, y2 = x + w, y1 + op_w
-        hinge = (x1, y1)
-        start_angle, end_angle = 90, 180
+        hinge = (x2, y2)
+        start_angle, end_angle = 180, 270  # يفتح لليسار (نحو داخل الغرفة)
 
     return {
         "p1": (x1, y1),
@@ -78,11 +78,9 @@ def generate_cad_and_preview(
     doc.header["$INSUNITS"] = 6  # Meters
     msp = doc.modelspace()
 
-    # إنشاء نوع خط متقطع للارتدادات
     if "DASHED" not in doc.linetypes:
         doc.linetypes.add("DASHED", pattern=[0.4, 0.2, -0.2])
 
-    # تعريف الطبقات (Layers) بألوان AutoCAD القياسية
     layers_config = [
         ("TERRAIN", 8, "CONTINUOUS"),     # رمادي لحدود الأرض
         ("SETBACKS", 1, "DASHED"),        # أحمر متقطع للارتدادات
@@ -118,10 +116,11 @@ def generate_cad_and_preview(
         room_pts = [(x, y), (x + w, y), (x + w, y + d), (x, y + d), (x, y)]
         msp.add_lwpolyline(room_pts, dxfattribs={"layer": "WALLS", "lineweight": 30})
 
-        # إضافة اسم الغرفة والمساحة في المركز
+        # إضافة اسم الغرفة والمساحة في المركز بحجم متناسب
         cx, cy = x + w / 2.0, y + d / 2.0
+        char_h = max(0.15, min(0.25, w * 0.08))
         label = f"{name}\\P{area} m²\\P({w}x{d}m)"
-        mtext = msp.add_mtext(label, dxfattribs={"layer": "TEXT_DIMS", "char_height": 0.25})
+        mtext = msp.add_mtext(label, dxfattribs={"layer": "TEXT_DIMS", "char_height": char_h})
         mtext.set_location((cx, cy), attachment_point=enums.MTextEntityAlignment.MIDDLE_CENTER)
 
     # رسم الأبواب والنوافذ في DXF
@@ -133,24 +132,21 @@ def generate_cad_and_preview(
         p1, p2 = geom["p1"], geom["p2"]
 
         if op.get("type") == "door":
-            # خط فتحة الباب + ضلفة الباب + قوس الفتح
             msp.add_line(p1, p2, dxfattribs={"layer": "DOORS"})
             hx, hy = geom["hinge"]
             r = geom["radius"]
             sa, ea = geom["start_angle"], geom["end_angle"]
-            # رسم الضلفة المفتوحة
             rad_ea = math.radians(ea)
             leaf_end = (hx + r * math.cos(rad_ea), hy + r * math.sin(rad_ea))
             msp.add_line((hx, hy), leaf_end, dxfattribs={"layer": "DOORS"})
             msp.add_arc(center=(hx, hy), radius=r, start_angle=sa, end_angle=ea, dxfattribs={"layer": "DOORS"})
 
         elif op.get("type") == "window":
-            # رسم خطين متوازيين يمثلان النافذة
             msp.add_line(p1, p2, dxfattribs={"layer": "WINDOWS", "lineweight": 25})
             if geom["wall"] in ["north", "south"]:
-                msp.add_line((p1[0], p1[1] + 0.08), (p2[0], p2[1] + 0.08), dxfattribs={"layer": "WINDOWS"})
+                msp.add_line((p1, p1 + 0.08), (p2, p2 + 0.08), dxfattribs={"layer": "WINDOWS"})
             else:
-                msp.add_line((p1[0] + 0.08, p1[1]), (p2[0] + 0.08, p2[1]), dxfattribs={"layer": "WINDOWS"})
+                msp.add_line((p1 + 0.08, p1), (p2 + 0.08, p2), dxfattribs={"layer": "WINDOWS"})
 
     doc.saveas(dxf_path)
 
@@ -159,7 +155,6 @@ def generate_cad_and_preview(
     # ==========================================
     fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
 
-    # رسم الأرض والارتدادات
     terrain_rect = patches.Rectangle(
         (0, 0), t_width, t_depth, linewidth=2.2, edgecolor="#333333", facecolor="#F4F6F7", label="Terrain"
     )
@@ -178,7 +173,6 @@ def generate_cad_and_preview(
         )
         ax.add_patch(setback_rect)
 
-    # ألوان هادئة لكل نوع فضاء
     type_colors = {
         "living": "#D6EAF8",
         "bedroom": "#FCF3CF",
@@ -199,7 +193,9 @@ def generate_cad_and_preview(
         ax.add_patch(rect)
 
         area = round(w * d, 2)
-        font_size = 7 if sp_type == "circulation" else 8.5
+        font_size = max(5.5, min(8.5, w * 2.8))
+        rotation = 90 if (sp_type == "circulation" and d > w * 2) else 0
+
         ax.text(
             x + w / 2.0,
             y + d / 2.0,
@@ -207,6 +203,7 @@ def generate_cad_and_preview(
             ha="center",
             va="center",
             fontsize=font_size,
+            rotation=rotation,
             fontweight="bold",
             color="#17202A",
         )
@@ -220,8 +217,7 @@ def generate_cad_and_preview(
         p1, p2 = geom["p1"], geom["p2"]
 
         if op.get("type") == "door":
-            # فتح الجدار بخط أبيض ثم رسم قوس الباب الأخضر
-            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="white", linewidth=3.2, zorder=4)
+            ax.plot([p1, p2], [p1, p2], color="white", linewidth=3.2, zorder=4)
             hx, hy = geom["hinge"]
             r = geom["radius"]
             sa, ea = geom["start_angle"], geom["end_angle"]
@@ -233,10 +229,9 @@ def generate_cad_and_preview(
             ax.plot([hx, hx + r * math.cos(rad_ea)], [hy, hy + r * math.sin(rad_ea)], color="#1E8449", linewidth=1.3, zorder=5)
 
         elif op.get("type") == "window":
-            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="#2980B9", linewidth=4.0, zorder=5)
-            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="white", linewidth=1.2, zorder=6)
+            ax.plot([p1, p2], [p1, p2], color="#2980B9", linewidth=4.0, zorder=5)
+            ax.plot([p1, p2], [p1, p2], color="white", linewidth=1.2, zorder=6)
 
-    # ضبط الهوامش والعناوين
     margin = max(t_width, t_depth) * 0.1
     ax.set_xlim(-margin, t_width + margin)
     ax.set_ylim(-margin, t_depth + margin)
