@@ -90,7 +90,8 @@ if user_input := st.chat_input("صف مشروعك (مثال: أرض مستطيل
                     temperature=0.1,
                     response_format={"type": "json_object"}
                 )
-                raw_response = completion.choices.message.content
+                raw_response = completion.choices[0].message.content
+
                 data = json.loads(raw_response)
 
                 status = data.get("status", "unknown")
