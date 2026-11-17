@@ -146,12 +146,28 @@ if user_input := st.chat_input("صف مشروعك (مثال: أرض مستطيل
                 warnings = []
 
                 while attempt <= max_retries:
-                    completion = client.chat.completions.create(
-                        model="openai/gpt-oss-120b",
-                        messages=api_messages,
-                        temperature=0.1,
-                        response_format={"type": "json_object"},
-                    )
+                    try:
+                        completion = client.chat.completions.create(
+                            model="openai/gpt-oss-120b",
+                            messages=api_messages,
+                            temperature=0.1,
+                            max_tokens=8192,
+                            reasoning_effort="low",
+                            response_format={"type": "json_object"},
+                        )
+                    except Exception as api_err:
+                        if "max completion tokens" in str(api_err):
+                            st.warning("⚠️ استغرق النموذج وقتاً طويلاً في الحساب، جاري إعادة المحاولة بوضع أسرع...")
+                            completion = client.chat.completions.create(
+                                model="llama-3.3-70b-versatile",
+                                messages=api_messages,
+                                temperature=0.1,
+                                max_tokens=4096,
+                                response_format={"type": "json_object"},
+                            )
+                        else:
+                            raise api_err
+
                     raw_response = completion.choices[0].message.content
                     data = json.loads(raw_response)
 
