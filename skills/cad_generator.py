@@ -2,252 +2,271 @@ import os
 import math
 from typing import Dict, Any, Tuple
 import ezdxf
-from ezdxf import enums
+from ezdxf.enums import TextEntityAlignment
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
 
-def _get_opening_geometry(space: Dict[str, Any], opening: Dict[str, Any]) -> Dict[str, Any]:
-    """يحسب الإحداثيات الهندسية للباب أو النافذة بحيث يفتح الباب دائماً نحو داخل الفضاء."""
-    x = float(space["x"])
-    y = float(space["y"])
-    w = float(space["width"])
-    d = float(space["depth"])
-    wall = opening.get("wall", "south")
-    offset = float(opening.get("offset", 0.5))
-    op_w = float(opening.get("width", 0.9))
+# ألوان هادئة ومهنية للغرف في صورة المعاينة PNG
+SPACE_COLORS = {
+    "living": "#E8F1F5",
+    "salon": "#E8F1F5",
+    "bedroom": "#F3EBF5",
+    "chambre": "#F3EBF5",
+    "kitchen": "#FFF4E5",
+    "cuisine": "#FFF4E5",
+    "bathroom": "#E5F6F0",
+    "sdb": "#E5F6F0",
+    "wc": "#E5F6F0",
+    "corridor": "#F2F3F4",
+    "degagement": "#F2F3F4",
+    "dégagement": "#F2F3F4",
+}
 
+
+def get_space_color(space_type: str, space_name: str) -> str:
+    st = space_type.lower()
+    sn = space_name.lower()
+    for key, color in SPACE_COLORS.items():
+        if key in st or key in sn:
+            return color
+    return "#F8F9F9"
+
+
+def _compute_opening_coords(
+    x: float, y: float, w: float, d: float, wall: str, offset: float, opening_w: float
+) -> Tuple[Tuple[float, float], Tuple[float, float], str]:
+    """
+    يحسب نقطتي البداية والنهاية للفتحة (باب أو نافذة) على جدار الغرفة.
+    """
+    wall = wall.lower()
     if wall == "south":
-        x1, y1 = x + offset, y
-        x2, y2 = x1 + op_w, y
-        hinge = (x1, y1)
-        start_angle, end_angle = 0, 90
+        p1 = (x + offset, y)
+        p2 = (x + offset + opening_w, y)
     elif wall == "north":
-        x1, y1 = x + offset, y + d
-        x2, y2 = x1 + op_w, y + d
-        hinge = (x1, y1)
-        start_angle, end_angle = 270, 360
+        p1 = (x + offset, y + d)
+        p2 = (x + offset + opening_w, y + d)
     elif wall == "west":
-        x1, y1 = x, y + offset
-        x2, y2 = x, y1 + op_w
-        hinge = (x1, y1)
-        start_angle, end_angle = 0, 90
-    else:  # east
-        x1, y1 = x + w, y + offset
-        x2, y2 = x + w, y1 + op_w
-        hinge = (x2, y2)
-        start_angle, end_angle = 180, 270
+        p1 = (x, y + offset)
+        p2 = (x, y + offset + opening_w)
+    elif wall == "east":
+        p1 = (x + w, y + offset)
+        p2 = (x + w, y + offset + opening_w)
+    else:
+        p1 = (x + offset, y)
+        p2 = (x + offset + opening_w, y)
+    return p1, p2, wall
 
-    return {
-        "p1": (x1, y1),
-        "p2": (x2, y2),
-        "hinge": hinge,
-        "radius": op_w,
-        "start_angle": start_angle,
-        "end_angle": end_angle,
-        "wall": wall,
-    }
+
+def _get_door_swing_geometry(
+    p1: Tuple[float, float], p2: Tuple[float, float], wall: str, opening_w: float
+) -> Tuple[Tuple[float, float], Tuple[float, float], float, float]:
+    """
+    يحسب نقطة مفصلة الباب، طرف الدرفة المفتوحة، وزاويتي البداية والنهاية لقوس الفتح (90 درجة) داخل الغرفة.
+    """
+    x1, y1 = p1
+    if wall == "south":
+        hinge = (x1, y1)
+        leaf_end = (x1, y1 + opening_w)
+        start_angle, end_angle = 0.0, 90.0
+    elif wall == "north":
+        hinge = (x1, y1)
+        leaf_end = (x1, y1 - opening_w)
+        start_angle, end_angle = 270.0, 360.0
+    elif wall == "west":
+        hinge = (x1, y1)
+        leaf_end = (x1 + opening_w, y1)
+        start_angle, end_angle = 0.0, 90.0
+    elif wall == "east":
+        hinge = (x1, y1)
+        leaf_end = (x1 - opening_w, y1)
+        start_angle, end_angle = 90.0, 180.0
+    else:
+        hinge = (x1, y1)
+        leaf_end = (x1, y1 + opening_w)
+        start_angle, end_angle = 0.0, 90.0
+
+    return hinge, leaf_end, start_angle, end_angle
 
 
 def generate_cad_and_preview(
-    plan_data: Dict[str, Any],
-    dxf_path: str = "output_plan.dxf",
-    png_path: str = "output_preview.png",
+    plan_data: Dict[str, Any], output_dir: str = "outputs", base_filename: str = "architn_plan"
 ) -> Tuple[str, str]:
     """
-    يولّد ملف AutoCAD (.dxf) بطبقات منظمة وصورة معاينة (.png) للمخطط المعماري.
+    يولد ملف AutoCAD (.dxf) وصورة معاينة (.png) من بيانات المخطط المدققة.
+    تُرجع: (مسار ملف DXF, مسار صورة PNG)
     """
-    urban = plan_data.get("urban_analysis", {})
-    spaces = plan_data.get("spaces", [])
-    openings = plan_data.get("openings", [])
+    os.makedirs(output_dir, exist_ok=True)
+    dxf_path = os.path.join(output_dir, f"{base_filename}.dxf")
+    png_path = os.path.join(output_dir, f"{base_filename}.png")
 
-    t_width = float(urban.get("terrain_width", 15.0))
-    t_depth = float(urban.get("terrain_depth", 20.0))
-    setbacks = urban.get("setbacks", {})
-    sb_left = float(setbacks.get("left", 0.0))
-    sb_right = float(setbacks.get("right", 0.0))
-    sb_front = float(setbacks.get("front", 0.0))
-    sb_rear = float(setbacks.get("rear", 0.0))
+    terrain = plan_data["terrain"]
+    setbacks = plan_data["setbacks"]
+    spaces = plan_data["spaces"]
 
-    space_map = {sp["id"]: sp for sp in spaces if "id" in sp}
+    t_width = float(terrain["width"])
+    t_depth = float(terrain["depth"])
+    street_side = str(terrain.get("street_side", "south")).lower()
+
+    x_min = float(setbacks.get("left", 0))
+    y_min = float(setbacks.get("front", 0))
+    x_max = t_width - float(setbacks.get("right", 0))
+    y_max = t_depth - float(setbacks.get("rear", 0))
 
     # ==========================================
-    # 1. إنشاء ملف AutoCAD (.dxf)
+    # 1. إنشاء ملف AutoCAD (.dxf) بطبقات منظمة
     # ==========================================
     doc = ezdxf.new("R2010")
-    doc.header["$INSUNITS"] = 6  # Meters
+    doc.units = ezdxf.units.M  # الوحدة بالمتر
     msp = doc.modelspace()
 
     if "DASHED" not in doc.linetypes:
-        doc.linetypes.add("DASHED", pattern=[0.4, 0.2, -0.2])
+        doc.linetypes.new("DASHED", dxfattribs={"description": "Dashed line", "pattern": [0.5, 0.25, -0.25]})
 
-    layers_config = [
-        ("TERRAIN", 8, "CONTINUOUS"),
-        ("SETBACKS", 1, "DASHED"),
-        ("WALLS", 7, "CONTINUOUS"),
-        ("DOORS", 3, "CONTINUOUS"),
-        ("WINDOWS", 4, "CONTINUOUS"),
-        ("TEXT_DIMS", 2, "CONTINUOUS"),
-    ]
-    for name, color, ltype in layers_config:
-        if name not in doc.layers:
-            doc.layers.add(name, color=color, linetype=ltype)
+    # تعريف الطبقات الهندسية القياسية
+    doc.layers.add("TERRAIN", color=3)       # أخضر: حدود الأرض
+    doc.layers.add("SETBACKS", color=1, linetype="DASHED")  # أحمر متقطع: الارتدادات
+    doc.layers.add("WALLS", color=7)         # أبيض/أسود: الجدران
+    doc.layers.add("DOORS", color=4)         # سماوي: الأبواب وأقواس الفتح
+    doc.layers.add("WINDOWS", color=5)       # أزرق: النوافذ
+    doc.layers.add("TEXT_AREAS", color=2)    # أصفر: الكتابات والمساحات
 
-    # رسم حدود قطعة الأرض (Terrain)
+    # رسم حدود قطعة الأرض (TERRAIN)
     terrain_pts = [(0, 0), (t_width, 0), (t_width, t_depth), (0, t_depth), (0, 0)]
     msp.add_lwpolyline(terrain_pts, dxfattribs={"layer": "TERRAIN", "lineweight": 35})
 
-    # رسم منطقة البناء المسموحة (Setbacks)
-    bx1, by1 = sb_left, sb_front
-    bx2, by2 = t_width - sb_right, t_depth - sb_rear
-    if bx2 > bx1 and by2 > by1:
-        setback_pts = [(bx1, by1), (bx2, by1), (bx2, by2), (bx1, by2), (bx1, by1)]
-        msp.add_lwpolyline(setback_pts, dxfattribs={"layer": "SETBACKS"})
+    # رسم خط منطقة البناء / الارتدادات (SETBACKS)
+    setback_pts = [(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max), (x_min, y_min)]
+    msp.add_lwpolyline(setback_pts, dxfattribs={"layer": "SETBACKS", "lineweight": 18})
 
-    # رسم الغرف والفضاءات
-    for sp in spaces:
-        x = float(sp["x"])
-        y = float(sp["y"])
-        w = float(sp["width"])
-        d = float(sp["depth"])
-        name = sp.get("name", "Espace")
-        area = round(w * d, 2)
-
-        room_pts = [(x, y), (x + w, y), (x + w, y + d), (x, y + d), (x, y)]
-        msp.add_lwpolyline(room_pts, dxfattribs={"layer": "WALLS", "lineweight": 30})
-
-        cx, cy = x + w / 2.0, y + d / 2.0
-        char_h = max(0.15, min(0.25, w * 0.08))
-        label = f"{name}\\P{area} m²\\P({w}x{d}m)"
-        mtext = msp.add_mtext(label, dxfattribs={"layer": "TEXT_DIMS", "char_height": char_h})
-        mtext.set_location((cx, cy), attachment_point=enums.MTextEntityAlignment.MIDDLE_CENTER)
-
-    # رسم الأبواب والنوافذ في DXF
-    for op in openings:
-        sp_id = op.get("space_id")
-        if sp_id not in space_map:
-            continue
-        geom = _get_opening_geometry(space_map[sp_id], op)
-        p1, p2 = geom["p1"], geom["p2"]
-
-        if op.get("type") == "door":
-            msp.add_line(p1, p2, dxfattribs={"layer": "DOORS"})
-            hx, hy = geom["hinge"]
-            r = geom["radius"]
-            sa, ea = geom["start_angle"], geom["end_angle"]
-            rad_ea = math.radians(ea)
-            leaf_end = (hx + r * math.cos(rad_ea), hy + r * math.sin(rad_ea))
-            msp.add_line((hx, hy), leaf_end, dxfattribs={"layer": "DOORS"})
-            msp.add_arc(center=(hx, hy), radius=r, start_angle=sa, end_angle=ea, dxfattribs={"layer": "DOORS"})
-
-        elif op.get("type") == "window":
-            msp.add_line(p1, p2, dxfattribs={"layer": "WINDOWS", "lineweight": 25})
-            if geom["wall"] in ["north", "south"]:
-                msp.add_line((p1[0], p1[1] + 0.08), (p2[0], p2[1] + 0.08), dxfattribs={"layer": "WINDOWS"})
-            else:
-                msp.add_line((p1[0] + 0.08, p1[1]), (p2[0] + 0.08, p2[1]), dxfattribs={"layer": "WINDOWS"})
-
-    doc.saveas(dxf_path)
+    # كتابة جهة الشارع
+    msp.add_text(
+        f"VOIE / RUE ({street_side.upper()})",
+        dxfattribs={"layer": "TEXT_AREAS", "height": 0.35},
+    ).set_placement((t_width / 2.0, -0.8), align=TextEntityAlignment.MIDDLE_CENTER)
 
     # ==========================================
-    # 2. إنشاء صورة المعاينة (.png)
+    # 2. إعداد لوحة الرسم للمعاينة (Matplotlib PNG)
     # ==========================================
-    fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
+    fig, ax = plt.subplots(figsize=(10, 10 * (t_depth / max(t_width, 1.0)) + 1.5))
+    ax.set_aspect("equal")
+    ax.set_facecolor("#FFFFFF")
 
+    # رسم حدود الأرض في PNG
     terrain_rect = patches.Rectangle(
-        (0, 0), t_width, t_depth, linewidth=2.2, edgecolor="#333333", facecolor="#F4F6F7", label="Terrain"
+        (0, 0), t_width, t_depth, linewidth=2.2, edgecolor="#1E8449", facecolor="#F9FBF9", linestyle="-", zorder=1
     )
     ax.add_patch(terrain_rect)
 
-    if bx2 > bx1 and by2 > by1:
-        setback_rect = patches.Rectangle(
-            (bx1, by1),
-            bx2 - bx1,
-            by2 - by1,
-            linewidth=1.5,
-            linestyle="--",
-            edgecolor="#E74C3C",
-            facecolor="none",
-            label="Zone Constructible (Retraits)",
-        )
-        ax.add_patch(setback_rect)
+    # رسم خط الارتداد في PNG
+    setback_rect = patches.Rectangle(
+        (x_min, y_min),
+        x_max - x_min,
+        y_max - y_min,
+        linewidth=1.3,
+        edgecolor="#C0392B",
+        facecolor="none",
+        linestyle="--",
+        zorder=2,
+    )
+    ax.add_patch(setback_rect)
 
-    type_colors = {
-        "living": "#D6EAF8",
-        "bedroom": "#FCF3CF",
-        "kitchen": "#D5F5E3",
-        "bathroom": "#EBDEF0",
-        "circulation": "#EAEDED",
-    }
-
-    for sp in spaces:
-        x = float(sp["x"])
-        y = float(sp["y"])
-        w = float(sp["width"])
-        d = float(sp["depth"])
-        sp_type = sp.get("type", "living")
-        color = type_colors.get(sp_type, "#EBF5FB")
-
-        rect = patches.Rectangle((x, y), w, d, linewidth=2.0, edgecolor="#1B2631", facecolor=color)
-        ax.add_patch(rect)
-
+    # ==========================================
+    # 3. رسم الفضاءات، الجدران، الأبواب، والنوافذ
+    # ==========================================
+    for space in spaces:
+        s_name = space.get("name", "Espace")
+        s_type = str(space.get("type", "room"))
+        x = float(space["x"])
+        y = float(space["y"])
+        w = float(space["width"])
+        d = float(space["depth"])
         area = round(w * d, 2)
-        font_size = max(5.5, min(8.5, w * 2.8))
-        rotation = 90 if (sp_type == "circulation" and d > w * 2) else 0
 
+        # --- في DXF: رسم مستطيل الجدران ---
+        room_pts = [(x, y), (x + w, y), (x + w, y + d), (x, y + d), (x, y)]
+        msp.add_lwpolyline(room_pts, dxfattribs={"layer": "WALLS", "lineweight": 30})
+
+        # --- في DXF: كتابة الاسم والمساحة ---
+        cx, cy = x + w / 2.0, y + d / 2.0
+        msp.add_text(
+            s_name,
+            dxfattribs={"layer": "TEXT_AREAS", "height": 0.25},
+        ).set_placement((cx, cy + 0.18), align=TextEntityAlignment.MIDDLE_CENTER)
+        msp.add_text(
+            f"{area:.2f} m²",
+            dxfattribs={"layer": "TEXT_AREAS", "height": 0.20},
+        ).set_placement((cx, cy - 0.18), align=TextEntityAlignment.MIDDLE_CENTER)
+
+        # --- في PNG: تعبئة الغرفة وجدرانها ---
+        fill_color = get_space_color(s_type, s_name)
+        room_patch = patches.Rectangle(
+            (x, y), w, d, linewidth=2.0, edgecolor="#1C2833", facecolor=fill_color, zorder=3
+        )
+        ax.add_patch(room_patch)
+
+        font_size = 7.5 if min(w, d) < 2.0 else 9.0
         ax.text(
-            x + w / 2.0,
-            y + d / 2.0,
-            f"{sp.get('name', '')}\n{area} m²\n({w}×{d}m)",
+            cx,
+            cy,
+            f"{s_name}\n({area:.1f} m²)",
             ha="center",
             va="center",
             fontsize=font_size,
-            rotation=rotation,
             fontweight="bold",
-            color="#17202A",
+            color="#1C2833",
+            zorder=6,
         )
 
-    # رسم الأبواب والنوافذ في صورة المعاينة
-    for op in openings:
-        sp_id = op.get("space_id")
-        if sp_id not in space_map:
-            continue
-        geom = _get_opening_geometry(space_map[sp_id], op)
-        p1, p2 = geom["p1"], geom["p2"]
+        # --- رسم الأبواب (DOORS) ---
+        for door in space.get("doors", []):
+            wall = door.get("wall", "south")
+            offset = float(door.get("offset", 0.2))
+            d_w = float(door.get("width", 0.9))
 
-        if op.get("type") == "door":
-            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="white", linewidth=3.2, zorder=4)
-            hx, hy = geom["hinge"]
-            r = geom["radius"]
-            sa, ea = geom["start_angle"], geom["end_angle"]
-            arc = patches.Arc(
-                (hx, hy), width=2 * r, height=2 * r, angle=0, theta1=sa, theta2=ea, color="#1E8449", linewidth=1.3, zorder=5
+            p1, p2, wall_dir = _compute_opening_coords(x, y, w, d, wall, offset, d_w)
+            hinge, leaf_end, start_ang, end_ang = _get_door_swing_geometry(p1, p2, wall_dir, d_w)
+
+            # DXF: خط درفة الباب + قوس الفتح
+            msp.add_line(hinge, leaf_end, dxfattribs={"layer": "DOORS", "lineweight": 15})
+            msp.add_arc(
+                center=hinge,
+                radius=d_w,
+                start_angle=start_ang,
+                end_angle=end_ang,
+                dxfattribs={"layer": "DOORS", "lineweight": 13},
             )
-            ax.add_patch(arc)
-            rad_ea = math.radians(ea)
-            ax.plot([hx, hx + r * math.cos(rad_ea)], [hy, hy + r * math.sin(rad_ea)], color="#1E8449", linewidth=1.3, zorder=5)
 
-        elif op.get("type") == "window":
-            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="#2980B9", linewidth=4.0, zorder=5)
-            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="white", linewidth=1.2, zorder=6)
+            # PNG: مسح الجدار مكان الباب + رسم الدرفة وقوس الفتح
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color=fill_color, linewidth=3.2, zorder=4)
+            ax.plot([hinge[0], leaf_end[0]], [hinge[1], leaf_end[1]], color="#1F618D", linewidth=1.6, zorder=5)
+            arc_patch = patches.Arc(
+                hinge,
+                width=2 * d_w,
+                height=2 * d_w,
+                angle=0,
+                theta1=start_ang,
+                theta2=end_ang,
+                color="#1F618D",
+                linewidth=1.1,
+                linestyle="-",
+                zorder=5,
+            )
+            ax.add_patch(arc_patch)
 
-    margin = max(t_width, t_depth) * 0.1
-    ax.set_xlim(-margin, t_width + margin)
-    ax.set_ylim(-margin, t_depth + margin)
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Largeur X (m)")
-    ax.set_ylabel("Profondeur Y (m)")
-    ax.set_title(
-        f"ArchiTN AI - Esquisse Architecturale ({t_width}m × {t_depth}m = {round(t_width * t_depth, 1)} m²)",
-        fontsize=11,
-        fontweight="bold",
-        pad=12,
-    )
-    ax.grid(True, linestyle=":", alpha=0.4)
-    ax.legend(loc="upper right", fontsize=8)
+        # --- رسم النوافذ (WINDOWS) ---
+        for win in space.get("windows", []):
+            wall = win.get("wall", "south")
+            offset = float(win.get("offset", 0.5))
+            w_w = float(win.get("width", 1.2))
 
-    plt.tight_layout()
-    plt.savefig(png_path, dpi=150)
-    plt.close(fig)
+            p1, p2, wall_dir = _compute_opening_coords(x, y, w, d, wall, offset, w_w)
 
-    return dxf_path, png_path
+            # DXF: رمز النافذة (خط مزدوج)
+            thickness = 0.14
+            if wall_dir in {"south", "north"}:
+                msp.add_line((p1[0], p1[1] - thickness / 2), (p2[0], p2[1] - thickness / 2), dxfattribs={"layer": "WINDOWS"})
+                msp.add_line((p1[0], p1[1] + thickness / 2), (p2[0], p2[1] + thickness / 2), dxfattribs={"layer": "WINDOWS"})
+                msp.add_line(p1, p2, dxfattribs={"layer": "WINDOWS"})
+            else:
+                msp.add_line((p1[0] - thickness / 2, p1[1]), (p2[0] - thickness / 2, p2[1]), dxfattribs={"layer": "WINDOWS"})
