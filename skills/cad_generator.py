@@ -21,22 +21,22 @@ def _get_opening_geometry(space: Dict[str, Any], opening: Dict[str, Any]) -> Dic
         x1, y1 = x + offset, y
         x2, y2 = x1 + op_w, y
         hinge = (x1, y1)
-        start_angle, end_angle = 0, 90  # يفتح للأعلى (نحو داخل الغرفة)
+        start_angle, end_angle = 0, 90
     elif wall == "north":
         x1, y1 = x + offset, y + d
         x2, y2 = x1 + op_w, y + d
         hinge = (x1, y1)
-        start_angle, end_angle = 270, 360  # يفتح للأسفل (نحو داخل الغرفة)
+        start_angle, end_angle = 270, 360
     elif wall == "west":
         x1, y1 = x, y + offset
         x2, y2 = x, y1 + op_w
         hinge = (x1, y1)
-        start_angle, end_angle = 0, 90  # يفتح لليمين (نحو داخل الغرفة)
+        start_angle, end_angle = 0, 90
     else:  # east
         x1, y1 = x + w, y + offset
         x2, y2 = x + w, y1 + op_w
         hinge = (x2, y2)
-        start_angle, end_angle = 180, 270  # يفتح لليسار (نحو داخل الغرفة)
+        start_angle, end_angle = 180, 270
 
     return {
         "p1": (x1, y1),
@@ -82,12 +82,12 @@ def generate_cad_and_preview(
         doc.linetypes.add("DASHED", pattern=[0.4, 0.2, -0.2])
 
     layers_config = [
-        ("TERRAIN", 8, "CONTINUOUS"),     # رمادي لحدود الأرض
-        ("SETBACKS", 1, "DASHED"),        # أحمر متقطع للارتدادات
-        ("WALLS", 7, "CONTINUOUS"),       # أبيض/أسود للجدران
-        ("DOORS", 3, "CONTINUOUS"),       # أخضر للأبواب وأقواسها
-        ("WINDOWS", 4, "CONTINUOUS"),     # سماوي (Cyan) للنوافذ
-        ("TEXT_DIMS", 2, "CONTINUOUS"),   # أصفر للنصوص والمساحات
+        ("TERRAIN", 8, "CONTINUOUS"),
+        ("SETBACKS", 1, "DASHED"),
+        ("WALLS", 7, "CONTINUOUS"),
+        ("DOORS", 3, "CONTINUOUS"),
+        ("WINDOWS", 4, "CONTINUOUS"),
+        ("TEXT_DIMS", 2, "CONTINUOUS"),
     ]
     for name, color, ltype in layers_config:
         if name not in doc.layers:
@@ -116,7 +116,6 @@ def generate_cad_and_preview(
         room_pts = [(x, y), (x + w, y), (x + w, y + d), (x, y + d), (x, y)]
         msp.add_lwpolyline(room_pts, dxfattribs={"layer": "WALLS", "lineweight": 30})
 
-        # إضافة اسم الغرفة والمساحة في المركز بحجم متناسب
         cx, cy = x + w / 2.0, y + d / 2.0
         char_h = max(0.15, min(0.25, w * 0.08))
         label = f"{name}\\P{area} m²\\P({w}x{d}m)"
@@ -144,9 +143,9 @@ def generate_cad_and_preview(
         elif op.get("type") == "window":
             msp.add_line(p1, p2, dxfattribs={"layer": "WINDOWS", "lineweight": 25})
             if geom["wall"] in ["north", "south"]:
-                msp.add_line((p1, p1 + 0.08), (p2, p2 + 0.08), dxfattribs={"layer": "WINDOWS"})
+                msp.add_line((p1[0], p1[1] + 0.08), (p2[0], p2[1] + 0.08), dxfattribs={"layer": "WINDOWS"})
             else:
-                msp.add_line((p1 + 0.08, p1), (p2 + 0.08, p2), dxfattribs={"layer": "WINDOWS"})
+                msp.add_line((p1[0] + 0.08, p1[1]), (p2[0] + 0.08, p2[1]), dxfattribs={"layer": "WINDOWS"})
 
     doc.saveas(dxf_path)
 
@@ -217,7 +216,7 @@ def generate_cad_and_preview(
         p1, p2 = geom["p1"], geom["p2"]
 
         if op.get("type") == "door":
-            ax.plot([p1, p2], [p1, p2], color="white", linewidth=3.2, zorder=4)
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="white", linewidth=3.2, zorder=4)
             hx, hy = geom["hinge"]
             r = geom["radius"]
             sa, ea = geom["start_angle"], geom["end_angle"]
@@ -229,8 +228,8 @@ def generate_cad_and_preview(
             ax.plot([hx, hx + r * math.cos(rad_ea)], [hy, hy + r * math.sin(rad_ea)], color="#1E8449", linewidth=1.3, zorder=5)
 
         elif op.get("type") == "window":
-            ax.plot([p1, p2], [p1, p2], color="#2980B9", linewidth=4.0, zorder=5)
-            ax.plot([p1, p2], [p1, p2], color="white", linewidth=1.2, zorder=6)
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="#2980B9", linewidth=4.0, zorder=5)
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="white", linewidth=1.2, zorder=6)
 
     margin = max(t_width, t_depth) * 0.1
     ax.set_xlim(-margin, t_width + margin)
