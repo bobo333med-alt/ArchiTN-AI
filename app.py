@@ -1,245 +1,227 @@
 import os
 import json
-import uuid
 import streamlit as st
 from groq import Groq
 
-from skills.validator import validate_plan
+from skills.validator import validate_architectural_plan
 from skills.cad_generator import generate_cad_and_preview
 
-st.set_page_config(page_title="ArchiTN AI - وكيل الهندسة المعمارية", page_icon="📐", layout="wide")
-st.title("📐 ArchiTN AI — مساعد المكتب الفني الذكي (تونس)")
-st.markdown("توليد المخططات المعمارية الأولية **(Esquisse)** وفق قوانين التهيئة العمرانية التونسية بصيغة **AutoCAD (.dxf)**.")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# إعداد الصفحة
+st.set_page_config(
+    page_title="ArchiTN AI | وكيل الهندسة المعمارية بتونس",
+    page_icon="📐",
+    layout="wide",
+)
 
 
-def load_text_file(relative_path: str) -> str:
-    full_path = os.path.join(BASE_DIR, relative_path)
-    if os.path.exists(full_path):
-        with open(full_path, "r", encoding="utf-8") as f:
+def read_file_if_exists(filepath: str) -> str:
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
     return ""
 
 
-@st.cache_data
-def build_system_prompt() -> str:
-    urban_rules = load_text_file("rules/tunisia_urban_rules.md")
-    arch_standards = load_text_file("rules/architectural_standards.md")
-    base_prompt = load_text_file("agent/system_prompt.md")
+def load_full_system_instructions() -> str:
+    """
+    يجمع تعليمات الوكيل مع القوانين العمرانية والمعايير المعمارية التونسية.
+    """
+    prompt_candidates = [
+        "agent/system_prompt.md",
+        "agent/system_prompt.py",
+        "system_prompt.py",
+        "system_prompt.md",
+    ]
+    base_prompt = ""
+    for path in prompt_candidates:
+        content = read_file_if_exists(path)
+        if content.strip():
+            base_prompt = content
+            break
 
-    return f"""
-{base_prompt}
+    urban_rules = read_file_if_exists("rules/tunisia_urban_rules.md")
+    arch_standards = read_file_if_exists("rules/architectural_standards.md")
 
-=== قوانين التهيئة العمرانية التونسية (يجب احترامها بصرامة) ===
-{urban_rules}
+    combined = base_prompt
+    if urban_rules:
+        combined += f"\n\n---\n# المرجع 1: قوانين التهيئة العمرانية التونسية\n{urban_rules}"
+    if arch_standards:
+        combined += f"\n\n---\n# المرجع 2: المعايير المعمارية المعتمدة\n{arch_standards}"
 
-=== المعايير المعمارية والهندسية ===
-{arch_standards}
-
-=== تذكير صارم بصيغة المخرجات ===
-يجب أن يكون ردك دائماً بصيغة JSON صالحة (Valid JSON) فقط دون أي نص خارجها.
-- في حال نقص البيانات، أرجع `"status": "missing_info"` مع مصفوفة `"questions"`.
-- في حال اكتمال البيانات، أرجع `"status": "complete"` مع الحقول: `"urban_analysis"`, `"spaces"`, `"openings"`, و `"technical_checklist"` بالضبط كما هو محدد في الهيكل أعلاه.
-"""
-
-
-def build_technical_report(plan_data: dict, warnings: list) -> str:
-    """يبني بطاقة فحص فني احترافية لعرضها للمهندس المعماري."""
-    urban = plan_data.get("urban_analysis", {})
-    spaces = plan_data.get("spaces", [])
-    checklist = plan_data.get("technical_checklist", {})
-    setbacks = urban.get("setbacks", {})
-
-    t_area = urban.get("terrain_area", 0)
-    cos_max = urban.get("cos_max", 0)
-    cuf_max = urban.get("cuf_max", 0)
-    max_fp = urban.get("max_allowed_footprint", 0)
-    act_fp = sum(round(float(s.get("width", 0)) * float(s.get("depth", 0)), 2) for s in spaces)
-
-    report = f"""
-#### 📊 التحليل العمراني (Données Urbanistiques)
-- **مساحة قطعة الأرض:** `{t_area} م²` ({urban.get('terrain_width', 0)}م × {urban.get('terrain_depth', 0)}م)
-- **المعاملات المسموحة:** `COS = {cos_max}` | `CUF = {cuf_max}`
-- **المساحة القصوى المسموح ببنائها:** `{max_fp} م²`
-- **المساحة المبنية الفعلية (Emprise au sol):** `{round(act_fp, 2)} م²`
-- **الارتدادات (Retraits):** أمامي `{setbacks.get('front', 0)}م` | خلفي `{setbacks.get('rear', 0)}م` | يسار `{setbacks.get('left', 0)}م` | يمين `{setbacks.get('right', 0)}م`
-
-#### 🏠 جدول الفضاءات (Tableau des Surfaces)
-
-| المعرّف | الفضاء | النوع | الأبعاد (م) | المساحة (م²) |
-| :--- | :--- | :--- | :---: | :---: |
-"""
-    for sp in spaces:
-        w = float(sp.get("width", 0))
-        d = float(sp.get("depth", 0))
-        area = round(w * d, 2)
-        report += f"| {sp.get('id', '-')} | {sp.get('name', '-')} | {sp.get('type', '-')} | {w} × {d} | **{area}** |\n"
-
-    notes = checklist.get("notes", "")
-    if notes:
-        report += f"\n**📝 ملاحظات المكتب الفني:** {notes}\n"
-
-    if warnings:
-        report += "\n#### ⚠️ تنبيهات هندسية للمراجعة:\n"
-        for w in warnings:
-            report += f"- {w}\n"
-
-    return report
+    return combined
 
 
-api_key = os.environ.get("GROQ_API_KEY")
-if not api_key:
-    st.error("⚠️ مفتاح GROQ_API_KEY غير موجود! يرجى إضافته في إعدادات Environment Variables على منصة Render.")
-    st.stop()
+def call_architect_agent(client: Groq, messages: list, model_name: str = "openai/gpt-oss-120b") -> dict:
+    """
+    يتصل بـ Groq API ويضمن استرجاع مخرجات JSON منظمة.
+    """
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        response_format={"type": "json_object"},
+        temperature=0.15,
+    )
+    raw_content = response.choices[0].message.content
+    return json.loads(raw_content)
 
-client = Groq(api_key=api_key)
 
+# ==========================================
+# واجهة المستخدم (Streamlit UI)
+# ==========================================
+st.title("📐 ArchiTN AI — مساعد المكتب الفني الذكي (تونس)")
+st.markdown(
+    "توليد مخططات معمارية أولية (**Esquisse**) مطابقة لقوانين التهيئة العمرانية التونسية، "
+    "مدققة حسابياً وجاهزة للتصدير بصيغة **AutoCAD (.dxf)**."
+)
+
+# الشريط الجانبي للإعدادات
+with st.sidebar:
+    st.header("⚙️ إعدادات المحرك الهندسي")
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        api_key = st.text_input("مفتاح Groq API Key", type="password")
+
+    model_choice = st.selectbox(
+        "النموذج المعتمد",
+        options=["openai/gpt-oss-120b", "llama-3.3-70b-versatile"],
+        index=0,
+    )
+    max_retries = st.slider("محاولات التصحيح الهندسي الذاتي", min_value=1, max_value=4, value=3)
+
+    st.divider()
+    st.info(
+        "**تنبيه مهني:** المخرجات هي مسودة أولية (Esquisse) خاضعة للمراجعة "
+        "والمصادقة القانونية من طرف مهندس معماري مرسم بعمادة المهندسين المعماريين بالبلاد التونسية."
+    )
+
+# تهيئة سجل المحادثة
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-with st.sidebar:
-    st.header("⚙️ لوحة التحكم")
-    st.info("النظام مزوّد بمدقق حسابي (Validator) لفحص التداخل، الارتدادات، والتهوية قبل الرسم.")
-    if st.button("🔄 بدء مشروع جديد", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
-
+# عرض المحادثات السابقة
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        if msg["role"] == "user":
-            st.markdown(msg["content"])
-        else:
-            st.markdown(msg.get("display_text", ""))
-            if "png_path" in msg and os.path.exists(msg["png_path"]):
-                st.image(msg["png_path"], caption="معاينة المخطط المعماري الأولي (Esquisse)")
-            if "dxf_path" in msg and os.path.exists(msg["dxf_path"]):
-                with open(msg["dxf_path"], "rb") as f:
-                    st.download_button(
-                        label="📥 تحميل ملف AutoCAD (.dxf)",
-                        data=f,
-                        file_name="ArchiTN_Esquisse.dxf",
-                        mime="application/dxf",
-                        key=f"dl_{msg.get('uid', uuid.uuid4())}",
-                    )
+        st.markdown(msg["content"])
 
-if user_input := st.chat_input("صف مشروعك (مثال: أرض مستطيلة 15م × 20م في منطقة UB بتونس، مطلوب S+2 منفصل...)"):
+# مربع إدخال طلب المهندس
+user_input = st.chat_input(
+    "صف قطعة الأرض والبرنامج الوظيفي (مثال: أرض 15م × 20م، بناء منفرد COS 0.4، ارتداد أمامي 4م وجانبي 3م، صالون + مطبخ + غرفتي نوم + حمام)..."
+)
+
+if user_input:
+    if not api_key:
+        st.error("يرجى توفير مفتاح GROQ_API_KEY في متغيرات البيئة على Render أو إدخاله في الشريط الجانبي.")
+        st.stop()
+
+    # إضافة رسالة المستخدم
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    api_messages = [{"role": "system", "content": build_system_prompt()}]
+    client = Groq(api_key=api_key)
+    system_instructions = load_full_system_instructions()
+
+    api_messages = [{"role": "system", "content": system_instructions}]
     for m in st.session_state.messages:
-        api_messages.append({"role": m["role"], "content": m.get("raw_content", m.get("content", ""))})
+        api_messages.append({"role": m["role"], "content": m["content"]})
 
     with st.chat_message("assistant"):
-        with st.spinner("جاري التحليل الهندسي وفحص قوانين التهيئة العمرانية..."):
+        with st.spinner("جاري التحليل العمراني وحساب الارتدادات وتوزيع الفضاءات..."):
             try:
-                max_retries = 2
-                attempt = 0
-                data = {}
-                raw_response = ""
-                is_valid = False
-                errors = []
-                warnings = []
+                plan_data = call_architect_agent(client, api_messages, model_name=model_choice)
 
-                while attempt <= max_retries:
-                    try:
-                        completion = client.chat.completions.create(
-                            model="openai/gpt-oss-120b",
-                            messages=api_messages,
-                            temperature=0.1,
-                            max_tokens=8192,
-                            reasoning_effort="low",
-                            response_format={"type": "json_object"},
-                        )
-                    except Exception as api_err:
-                        if "max completion tokens" in str(api_err):
-                            st.warning("⚠️ استغرق النموذج وقتاً طويلاً في الحساب، جاري إعادة المحاولة بوضع أسرع...")
-                            completion = client.chat.completions.create(
-                                model="llama-3.3-70b-versatile",
-                                messages=api_messages,
-                                temperature=0.1,
-                                max_tokens=4096,
-                                response_format={"type": "json_object"},
-                            )
-                        else:
-                            raise api_err
+                # الحالة 1: نقص في البيانات (قاعدة عدم الافتراض)
+                if plan_data.get("status") == "NEED_INFO":
+                    msg_text = plan_data.get("message", "يرجى استكمال المعطيات الهندسية التالية:")
+                    missing = plan_data.get("missing_fields", [])
+                    reply = f"### ⚠️ معطيات ناقصة (قاعدة عدم الافتراض)\n{msg_text}\n\n"
+                    for item in missing:
+                        reply += f"- **{item}**\n"
 
-                    raw_response = completion.choices[0].message.content
-                    data = json.loads(raw_response)
+                    st.warning(reply)
+                    st.session_state.messages.append({"role": "assistant", "content": reply})
 
-                    status = data.get("status", "unknown")
-                    if status == "missing_info":
-                        break
+                # الحالة 2: جاهز للتدقيق الهندسي والرسم
+                elif plan_data.get("status") == "READY":
+                    is_valid, errors, audit_report = validate_architectural_plan(plan_data)
 
-                    # استخراج بيانات المخطط سواء كانت مباشرة أو داخل plan_data
-                    plan_payload = data.get("plan_data", data)
-                    is_valid, errors, warnings = validate_plan(plan_payload)
-
-                    if is_valid:
-                        data = plan_payload
-                        break
-
-                    # حلقة التصحيح التلقائي: إرسال الأخطاء للوكيل لإصلاحها
-                    attempt += 1
-                    if attempt <= max_retries:
-                        st.toast(f"🔄 جاري تصحيح {len(errors)} خطأ هندسي تلقائياً (محاولة {attempt}/{max_retries})...")
+                    # حلقة التصحيح الذاتي إذا وجد المدقق أخطاء هندسية
+                    attempt = 0
+                    while not is_valid and attempt < max_retries:
+                        attempt += 1
+                        st.info(f"🔄 جاري التصحيح الهندسي التلقائي (المحاولة {attempt}/{max_retries}) لمعالجة {len(errors)} ملاحظة...")
                         correction_prompt = (
-                            "المخطط الذي ولدته يحتوي على الأخطاء الهندسية والقانونية التالية:\n"
-                            + "\n".join(f"- {err}" for err in errors)
-                            + "\n\nيرجى إعادة حساب الإحداثيات والأبعاد والفتحات بدقة لإصلاح جميع هذه الأخطاء وإرجاع JSON كامل وصالح."
+                            "فشل المخطط في الفحص البرمجي الهندسي (Validator) بسبب الأخطاء التالية:\n"
+                            + "\n".join([f"- {err}" for err in errors])
+                            + "\n\nأعد توليد كامل الـ JSON بصيغة صالحة مع تصحيح الإحداثيات والأبعاد والفتحات لتجاوز جميع هذه الأخطاء بدقة."
                         )
-                        api_messages.append({"role": "assistant", "content": raw_response})
+                        api_messages.append({"role": "assistant", "content": json.dumps(plan_data, ensure_ascii=False)})
                         api_messages.append({"role": "user", "content": correction_prompt})
 
-                status = data.get("status", "unknown")
-                uid = str(uuid.uuid4())[:8]
-                assistant_record = {"role": "assistant", "raw_content": raw_response, "uid": uid}
+                        plan_data = call_architect_agent(client, api_messages, model_name=model_choice)
+                        is_valid, errors, audit_report = validate_architectural_plan(plan_data)
 
-                if status == "missing_info":
-                    msg_text = "**يرجى توضيح البيانات التالية لإتمام الدراسة الهندسية دون افتراضات:**\n\n"
-                    for q in data.get("questions", []):
-                        msg_text += f"- {q}\n"
-                    st.markdown(msg_text)
-                    assistant_record["display_text"] = msg_text
-
-                elif status in ["complete", "ready"]:
-                    if not is_valid and errors:
-                        st.warning("⚠️ تعذر حل بعض الملاحظات الهندسية تلقائياً، يرجى مراجعتها:")
+                    # بعد انتهاء الفحص (أو محاولات التصحيح)
+                    if not is_valid:
+                        st.error("❌ تعذر استيفاء جميع الشروط الهندسية تلقائياً. الملاحظات المتبقية:")
                         for err in errors:
-                            st.error(f"❌ {err}")
+                            st.write(f"- {err}")
+                        with st.expander("عرض بيانات JSON الخام للمراجعة"):
+                            st.json(plan_data)
+                    else:
+                        # توليد ملف AutoCAD وصورة المعاينة
+                        dxf_path, png_path = generate_cad_and_preview(plan_data)
 
-                    report_md = build_technical_report(data, warnings)
-                    st.success("✅ اكتمل التحقق الهندسي وتم توليد المخطط!")
-                    st.markdown(f"### 📋 بطاقة الفحص الفني:\n{report_md}")
-                    assistant_record["display_text"] = f"✅ **اكتمل التحقق الهندسي:**\n\n{report_md}"
+                        st.success("✅ تم اجتياز الفحص الهندسي (0 تداخل، احترام الارتدادات و COS، وتأمين التهوية والممرات).")
 
-                    dxf_file = os.path.join(OUTPUT_DIR, f"ArchiTN_{uid}.dxf")
-                    png_file = os.path.join(OUTPUT_DIR, f"ArchiTN_{uid}.png")
+                        col1, col2 = st.columns([3, 2])
 
-                    dxf_path, png_path = generate_cad_and_preview(data, dxf_path=dxf_file, png_path=png_file)
-                    assistant_record["png_path"] = png_path
-                    assistant_record["dxf_path"] = dxf_path
+                        with col1:
+                            st.subheader("🖼️ المخطط المعماري الأولي (Esquisse)")
+                            st.image(png_path, use_container_width=True)
 
-                    if os.path.exists(png_path):
-                        st.image(png_path, caption="معاينة المخطط المعماري الأولي (Esquisse)")
-                    if os.path.exists(dxf_path):
-                        with open(dxf_path, "rb") as f:
-                            st.download_button(
-                                label="📥 تحميل ملف AutoCAD (.dxf)",
-                                data=f,
-                                file_name="ArchiTN_Esquisse.dxf",
-                                mime="application/dxf",
-                                key=f"dl_{uid}",
-                            )
+                            with open(dxf_path, "rb") as dxf_file:
+                                st.download_button(
+                                    label="📥 تحميل ملف AutoCAD (.dxf) بطبقات منظمة",
+                                    data=dxf_file,
+                                    file_name="ArchiTN_Esquisse.dxf",
+                                    mime="application/dxf",
+                                    type="primary",
+                                )
+
+                        with col2:
+                            st.subheader("📊 بطاقة الفحص الفني (Audit)")
+                            m1, m2 = st.columns(2)
+                            m1.metric("مساحة الأرض", f"{audit_report.get('terrain_area_m2', 0)} م²")
+                            m2.metric("المساحة المبنية", f"{audit_report.get('actual_built_area_m2', 0)} م²")
+
+                            max_fp = audit_report.get("max_allowed_footprint_m2", 0)
+                            if max_fp > 0:
+                                st.metric("الحد الأقصى المسموح (COS)", f"{max_fp} م²")
+
+                            st.markdown("**جدول الفضاءات والمساحات:**")
+                            spaces_table = [
+                                {
+                                    "الفضاء": s.get("name"),
+                                    "الأبعاد (م)": f"{s.get('width')} × {s.get('depth')}",
+                                    "المساحة (م²)": s.get("area"),
+                                }
+                                for s in plan_data.get("spaces", [])
+                            ]
+                            st.table(spaces_table)
+
+                            notes = plan_data.get("engineering_report", {}).get("compliance_notes", [])
+                            if notes:
+                                st.markdown("**ملاحظات المطابقة العمرانية:**")
+                                for note in notes:
+                                    st.write(f"✔️ {note}")
+
+                        summary_msg = f"تم توليد المخطط المعماري بمساحة مبنية **{audit_report.get('actual_built_area_m2')} م²** واجتياز التدقيق الهندسي بنجاح."
+                        st.session_state.messages.append({"role": "assistant", "content": summary_msg})
+
                 else:
-                    st.json(data)
-                    assistant_record["display_text"] = f"```json\n{raw_response}\n```"
-
-                st.session_state.messages.append(assistant_record)
+                    st.warning("استجابة غير متوقعة من الوكيل:")
+                    st.json(plan_data)
 
             except Exception as e:
-                st.error(f"حدث خطأ أثناء الاتصال أو معالجة البيانات: {str(e)}")
+                st.error(f"حدث خطأ تقني أثناء المعالجة: {str(e)}")
