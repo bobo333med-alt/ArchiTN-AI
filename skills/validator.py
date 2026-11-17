@@ -9,7 +9,7 @@ def validate_plan(plan_data: Dict[str, Any]) -> Tuple[bool, List[str], List[str]
     errors: List[str] = []
     warnings: List[str] = []
 
-    if plan_data.get("status") != "complete":
+    if plan_data.get("status") not in ["complete", "ready"]:
         return False, ["المخطط غير مكتمل أو ينتظر معطيات إضافية من المستخدم."], []
 
     urban = plan_data.get("urban_analysis", {})
@@ -104,7 +104,10 @@ def validate_plan(plan_data: Dict[str, Any]) -> Tuple[bool, List[str], List[str]
             f"تجاوز المساحة القصوى المسموح ببنائها (COS): المساحة المحسوبة {round(total_calculated_area, 2)}م² تتجاوز المسموح {max_footprint}م²."
         )
 
-    # 4. فحص وجود ممر توزيع (Dégagement)
+    # 4. فحص وجود غرف النوم وممر التوزيع (Dégagement)
+    if not has_bedroom:
+        errors.append("المخطط لا يحتوي على أي غرفة نوم (bedroom)! يرجى إضافة غرف النوم المطلوبة وربطها بممر التوزيع.")
+
     if has_bedroom and not has_circulation:
         errors.append("المخطط يحتوي على غرف نوم ولا يتضمن ممر توزيع (Dégagement / Couloir) لعزل الفضاءات الخاصة.")
 
