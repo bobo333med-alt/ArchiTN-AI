@@ -246,3 +246,12 @@ if user_input:
                                     st.write(f"✔️ {note}")
 
                         summary_msg = f"تم توليد المخطط المعماري بمساحة مبنية **{audit_report.get('actual_built_area_m2')} م²** واجتياز التدقيق الهندسي بنجاح."
+                        st.session_state.messages.append({"role": "assistant", "content": summary_msg})
+
+                else:
+                    st.warning("استجابة غير متوقعة من الوكيل:")
+                    st.json(plan_data)
+
+            except Exception as e:
+                st.error(f"حدث خطأ تقني أثناء المعالجة: {str(e)}")
+
