@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import streamlit as st
@@ -8,6 +9,7 @@ from skills.validator import validate_architectural_plan
 from skills.cad_generator import generate_cad_and_preview
 
 
+# إعداد الصفحة
 st.set_page_config(
     page_title="ArchiTN AI | وكيل الهندسة المعمارية بتونس",
     page_icon="📐",
@@ -23,6 +25,9 @@ def read_file_if_exists(filepath: str) -> str:
 
 
 def load_full_system_instructions() -> str:
+    """
+    يجمع تعليمات الوكيل مع القوانين العمرانية والمعايير المعمارية التونسية.
+    """
     prompt_candidates = [
         "agent/system_prompt.md",
         "agent/system_prompt.py",
@@ -48,15 +53,36 @@ def load_full_system_instructions() -> str:
     return combined
 
 
+def extract_json_from_text(raw_text: str) -> dict:
+    """
+    يستخرج كائن JSON صالح من استجابة النموذج حتى لو كان محاطاً بعلامات Markdown أو نص إضافي.
+    """
+    text = raw_text.strip()
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if match:
+            text = match.group(1)
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
+
+    return json.loads(text)
+
+
 def call_architect_agent(client: Groq, messages: list, model_name: str = "openai/gpt-oss-120b") -> dict:
+    """
+    يتصل بـ Groq API مع مساحة توكن كافية للتفكير وإنتاج JSON كامل دون انقطاع.
+    """
     response = client.chat.completions.create(
         model=model_name,
         messages=messages,
-        response_format={"type": "json_object"},
         temperature=0.15,
+        max_tokens=4096,
     )
     raw_content = response.choices[0].message.content
-    return json.loads(raw_content)
+    return extract_json_from_text(raw_content)
 
 
 # ==========================================
@@ -68,6 +94,7 @@ st.markdown(
     "مدققة حسابياً وجاهزة للتصدير بصيغة **AutoCAD (.dxf)**."
 )
 
+# الشريط الجانبي للإعدادات
 with st.sidebar:
     st.header("⚙️ إعدادات المحرك الهندسي")
     api_key = os.environ.get("GROQ_API_KEY", "")
@@ -91,13 +118,16 @@ with st.sidebar:
         "والمصادقة القانونية من طرف مهندس معماري مرسم بعمادة المهندسين المعماريين بالبلاد التونسية."
     )
 
+# تهيئة سجل المحادثة
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# عرض المحادثات السابقة
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# مربع إدخال طلب المهندس
 user_input = st.chat_input(
     "صف قطعة الأرض والبرنامج الوظيفي (مثال: أرض 15م × 20م، بناء منفرد COS 0.4، ارتداد أمامي 4م وجانبي 3م، صالون + مطبخ + غرفتي نوم + حمام)..."
 )
@@ -145,7 +175,7 @@ if user_input:
                     while not is_valid and attempt < max_retries:
                         attempt += 1
                         st.info(f"🔄 جاري التصحيح الهندسي التلقائي (المحاولة {attempt}/{max_retries}) لمعالجة {len(errors)} ملاحظة...")
-                        time.sleep(2)  # فاصل زمني قصير لتجنب حد التوكن في الدقيقة TPM
+                        time.sleep(2)
 
                         compact_json = json.dumps(plan_data, ensure_ascii=False, separators=(",", ":"))
                         correction_prompt = (
@@ -216,11 +246,3 @@ if user_input:
                                     st.write(f"✔️ {note}")
 
                         summary_msg = f"تم توليد المخطط المعماري بمساحة مبنية **{audit_report.get('actual_built_area_m2')} م²** واجتياز التدقيق الهندسي بنجاح."
-                        st.session_state.messages.append({"role": "assistant", "content": summary_msg})
-
-                else:
-                    st.warning("استجابة غير متوقعة من الوكيل:")
-                    st.json(plan_data)
-
-            except Exception as e:
-                st.error(f"حدث خطأ تقني أثناء المعالجة: {str(e)}")
