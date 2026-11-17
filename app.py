@@ -81,7 +81,7 @@ def call_architect_agent(client: Groq, messages: list, model_name: str = "openai
         temperature=0.15,
         max_tokens=4096,
     )
-    raw_content = response.choices[0].message.content
+    raw_content = response.choices.message.content
     return extract_json_from_text(raw_content)
 
 
