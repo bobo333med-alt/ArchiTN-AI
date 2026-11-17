@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import streamlit as st
 from groq import Groq
 
@@ -7,7 +8,6 @@ from skills.validator import validate_architectural_plan
 from skills.cad_generator import generate_cad_and_preview
 
 
-# إعداد الصفحة
 st.set_page_config(
     page_title="ArchiTN AI | وكيل الهندسة المعمارية بتونس",
     page_icon="📐",
@@ -23,9 +23,6 @@ def read_file_if_exists(filepath: str) -> str:
 
 
 def load_full_system_instructions() -> str:
-    """
-    يجمع تعليمات الوكيل مع القوانين العمرانية والمعايير المعمارية التونسية.
-    """
     prompt_candidates = [
         "agent/system_prompt.md",
         "agent/system_prompt.py",
@@ -44,17 +41,14 @@ def load_full_system_instructions() -> str:
 
     combined = base_prompt
     if urban_rules:
-        combined += f"\n\n---\n# المرجع 1: قوانين التهيئة العمرانية التونسية\n{urban_rules}"
+        combined += f"\n\n---\n# قوانين التهيئة العمرانية التونسية\n{urban_rules}"
     if arch_standards:
-        combined += f"\n\n---\n# المرجع 2: المعايير المعمارية المعتمدة\n{arch_standards}"
+        combined += f"\n\n---\n# المعايير المعمارية المعتمدة\n{arch_standards}"
 
     return combined
 
 
 def call_architect_agent(client: Groq, messages: list, model_name: str = "openai/gpt-oss-120b") -> dict:
-    """
-    يتصل بـ Groq API ويضمن استرجاع مخرجات JSON منظمة.
-    """
     response = client.chat.completions.create(
         model=model_name,
         messages=messages,
@@ -74,7 +68,6 @@ st.markdown(
     "مدققة حسابياً وجاهزة للتصدير بصيغة **AutoCAD (.dxf)**."
 )
 
-# الشريط الجانبي للإعدادات
 with st.sidebar:
     st.header("⚙️ إعدادات المحرك الهندسي")
     api_key = os.environ.get("GROQ_API_KEY", "")
@@ -88,22 +81,23 @@ with st.sidebar:
     )
     max_retries = st.slider("محاولات التصحيح الهندسي الذاتي", min_value=1, max_value=4, value=3)
 
+    if st.button("🗑️ بدء مشروع / محادثة جديدة", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
+
     st.divider()
     st.info(
         "**تنبيه مهني:** المخرجات هي مسودة أولية (Esquisse) خاضعة للمراجعة "
         "والمصادقة القانونية من طرف مهندس معماري مرسم بعمادة المهندسين المعماريين بالبلاد التونسية."
     )
 
-# تهيئة سجل المحادثة
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# عرض المحادثات السابقة
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# مربع إدخال طلب المهندس
 user_input = st.chat_input(
     "صف قطعة الأرض والبرنامج الوظيفي (مثال: أرض 15م × 20م، بناء منفرد COS 0.4، ارتداد أمامي 4م وجانبي 3م، صالون + مطبخ + غرفتي نوم + حمام)..."
 )
@@ -113,7 +107,6 @@ if user_input:
         st.error("يرجى توفير مفتاح GROQ_API_KEY في متغيرات البيئة على Render أو إدخاله في الشريط الجانبي.")
         st.stop()
 
-    # إضافة رسالة المستخدم
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
@@ -121,14 +114,16 @@ if user_input:
     client = Groq(api_key=api_key)
     system_instructions = load_full_system_instructions()
 
-    api_messages = [{"role": "system", "content": system_instructions}]
-    for m in st.session_state.messages:
-        api_messages.append({"role": m["role"], "content": m["content"]})
+    # الاحتفاظ بآخر 4 رسائل فقط لتقليل استهلاك التوكن وتجنب خطأ 413
+    recent_history = st.session_state.messages[-4:]
+    base_api_messages = [{"role": "system", "content": system_instructions}]
+    for m in recent_history:
+        base_api_messages.append({"role": m["role"], "content": m["content"]})
 
     with st.chat_message("assistant"):
         with st.spinner("جاري التحليل العمراني وحساب الارتدادات وتوزيع الفضاءات..."):
             try:
-                plan_data = call_architect_agent(client, api_messages, model_name=model_choice)
+                plan_data = call_architect_agent(client, base_api_messages, model_name=model_choice)
 
                 # الحالة 1: نقص في البيانات (قاعدة عدم الافتراض)
                 if plan_data.get("status") == "NEED_INFO":
@@ -145,23 +140,28 @@ if user_input:
                 elif plan_data.get("status") == "READY":
                     is_valid, errors, audit_report = validate_architectural_plan(plan_data)
 
-                    # حلقة التصحيح الذاتي إذا وجد المدقق أخطاء هندسية
+                    # حلقة التصحيح الذاتي دون تكديس الرسائل السابقة
                     attempt = 0
                     while not is_valid and attempt < max_retries:
                         attempt += 1
                         st.info(f"🔄 جاري التصحيح الهندسي التلقائي (المحاولة {attempt}/{max_retries}) لمعالجة {len(errors)} ملاحظة...")
-                        correction_prompt = (
-                            "فشل المخطط في الفحص البرمجي الهندسي (Validator) بسبب الأخطاء التالية:\n"
-                            + "\n".join([f"- {err}" for err in errors])
-                            + "\n\nأعد توليد كامل الـ JSON بصيغة صالحة مع تصحيح الإحداثيات والأبعاد والفتحات لتجاوز جميع هذه الأخطاء بدقة."
-                        )
-                        api_messages.append({"role": "assistant", "content": json.dumps(plan_data, ensure_ascii=False)})
-                        api_messages.append({"role": "user", "content": correction_prompt})
+                        time.sleep(2)  # فاصل زمني قصير لتجنب حد التوكن في الدقيقة TPM
 
-                        plan_data = call_architect_agent(client, api_messages, model_name=model_choice)
+                        compact_json = json.dumps(plan_data, ensure_ascii=False, separators=(",", ":"))
+                        correction_prompt = (
+                            "فشل المخطط في الفحص الهندسي (Validator) بسبب:\n"
+                            + "\n".join([f"- {err}" for err in errors])
+                            + "\n\nأعد توليد كامل الـ JSON بصيغة صالحة مع إصلاح الإحداثيات والأبعاد والفتحات لتجاوز هذه الأخطاء بدقة."
+                        )
+
+                        retry_messages = base_api_messages + [
+                            {"role": "assistant", "content": compact_json},
+                            {"role": "user", "content": correction_prompt},
+                        ]
+
+                        plan_data = call_architect_agent(client, retry_messages, model_name=model_choice)
                         is_valid, errors, audit_report = validate_architectural_plan(plan_data)
 
-                    # بعد انتهاء الفحص (أو محاولات التصحيح)
                     if not is_valid:
                         st.error("❌ تعذر استيفاء جميع الشروط الهندسية تلقائياً. الملاحظات المتبقية:")
                         for err in errors:
@@ -169,12 +169,11 @@ if user_input:
                         with st.expander("عرض بيانات JSON الخام للمراجعة"):
                             st.json(plan_data)
                     else:
-                        # توليد ملف AutoCAD وصورة المعاينة
                         dxf_path, png_path = generate_cad_and_preview(plan_data)
 
                         st.success("✅ تم اجتياز الفحص الهندسي (0 تداخل، احترام الارتدادات و COS، وتأمين التهوية والممرات).")
 
-                        col1, col2 = st.columns([3, 2])
+                        col1, col2 = st.columns([1.4, 1])
 
                         with col1:
                             st.subheader("🖼️ المخطط المعماري الأولي (Esquisse)")
